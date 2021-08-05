@@ -68,12 +68,14 @@ def drop_path(x, drop_prob):
     if drop_prob > 0.:
         keep_prob = 1. - drop_prob
 
-        mask = torch.cuda.FloatTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob)
+        # mask = torch.cuda.FloatTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob)
+        mask = torch.FloatTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob)
         x.div_(keep_prob)
         try:
             x.mul_(mask)
         except:
-            mask = torch.cuda.HalfTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob)
+            # mask = torch.cuda.HalfTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob)
+            mask = torch.HalfTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob)
             x.mul_(mask)
     return x
 
@@ -154,6 +156,17 @@ class NetworkCIFAR(nn.Module):
         out = self.global_pooling(s1)
         logits = self.classifier(out.view(out.size(0), -1))
         return logits, logits_aux
+    
+    def set_noise(self, var, N=8, m=2):
+        for mo in self.modules():
+            if isinstance(mo, NLinear) or isinstance(mo, NConv2d):
+                # m.set_noise(var)
+                mo.set_noise(var, N, m)
+    
+    def clear_noise(self):
+        for m in self.modules():
+            if isinstance(m, NLinear) or isinstance(m, NConv2d):
+                m.clear_noise()
 
 
 

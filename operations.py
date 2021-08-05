@@ -55,6 +55,57 @@ class Conv2d(nn.Conv2d):
         return F.conv2d(x, weight, self.bias, self.stride,
                         self.padding, self.dilation, self.groups)
 
+class NModule(nn.Module):
+    # def set_noise(self, var):
+    #     self.noise = torch.normal(mean=0., std=var, size=self.noise.size()).to(self.op.weight.device) 
+    def set_noise(self, var, N, m):
+        noise = torch.zeros_like(self.noise)
+        scale = self.op.weight.abs().max()
+        for i in range(1, N//m + 1):
+            noise += torch.normal(mean=0., std=var, size=self.noise.size()) * (pow(2, - i*m))
+        self.noise = noise.to(self.op.weight.device) * scale
+    
+    def clear_noise(self):
+        self.noise = torch.zeros_like(self.op.weight)
+
+class NLinear(NModule):
+    def __init__(self, in_features, out_features, bias=True):
+        super().__init__()
+        self.op = nn.Linear(in_features, out_features, bias)
+        self.noise = torch.zeros_like(self.op.weight)
+        self.function = nn.functional.linear
+
+    def forward(self, x):
+        x = self.function(x, (self.op.weight + self.noise), self.op.bias)
+        return x
+
+class NSTPConv2d(NModule):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros'):
+        super().__init__()
+        self.op = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode)
+        self.noise = torch.zeros_like(self.op.weight)
+        self.function = nn.functional.conv2d
+
+    def forward(self, x):
+        weight = self.op.weight
+        weight_mean = weight.mean(dim=1, keepdim=True).mean(dim=2,
+                                  keepdim=True).mean(dim=3, keepdim=True)
+        weight = weight - weight_mean
+        std = weight.view(weight.size(0), -1).std(dim=1).view(-1, 1, 1, 1) + 1e-5
+        weight = weight / std.expand_as(weight)
+        x = self.function(x, (weight + self.noise), self.op.bias, self.op.stride, self.op.padding, self.op.dilation, self.op.groups)
+        return x
+
+class NConv2d(NModule):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros'):
+        super().__init__()
+        self.op = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode)
+        self.noise = torch.zeros_like(self.op.weight)
+        self.function = nn.functional.conv2d
+
+    def forward(self, x):
+        x = self.function(x, (self.op.weight + self.noise), self.op.bias, self.op.stride, self.op.padding, self.op.dilation, self.op.groups)
+        return x
 
 class SepConv(nn.Module):
 

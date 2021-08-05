@@ -4,18 +4,22 @@
 # LICENSE file in the root directory of this source tree.
 # 
 import sys
+
+from numpy import isin
 import utils
 import argparse
 import torch.nn as nn
 import torch.utils
 import torchvision.datasets as dset
-import torch.backends.cudnn as cudnn
+# import torch.backends.cudnn as cudnn
 from collections import namedtuple
 from model import NetworkCIFAR as Network
+from operations import Conv2d, NSTPConv2d, NConv2d, NLinear
 from utils import *
 from torch.utils.data.dataset import Subset
 import logging
 from nasnet_set import *
+from tqdm import tqdm
 
 
 
@@ -51,7 +55,7 @@ net = eval(args.arch)
 print(net)
 code = gen_code_from_list(net, node_num=int((len(net) / 4)))
 genotype = translator([code, code], max_node=int((len(net) / 4)))
-print(genotype)
+# print(genotype)
 
 
 
@@ -68,22 +72,20 @@ logging.getLogger().addHandler(fh)
 
 def main():
 
-    torch.cuda.set_device(args.gpu)
-    cudnn.benchmark = True
-    cudnn.enabled = True
+    # torch.cuda.set_device(args.gpu)
+    # cudnn.benchmark = True
+    # cudnn.enabled = True
 
-    logging.info('gpu device = %d' % args.gpu)
-    logging.info("args = %s", args)
+    # logging.info('gpu device = %d' % args.gpu)
+    # logging.info("args = %s", args)
 
 
-    model = Network(args.init_ch, 10, args.layers, True, genotype).cuda()
-
+    model = Network(args.init_ch, 10, args.layers, True, genotype)#.cuda()
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
-    checkpoint = torch.load(args.checkpoint + '/top1.pt')
+    checkpoint = torch.load(args.checkpoint + '/top1.pt', map_location="cpu")
     model.load_state_dict(checkpoint['model_state_dict'])
-    criterion = nn.CrossEntropyLoss().cuda()
-
+    criterion = nn.CrossEntropyLoss()#.cuda()
 
     CIFAR_MEAN = [0.49139968, 0.48215827, 0.44653124]
     CIFAR_STD = [0.24703233, 0.24348505, 0.26158768]
@@ -93,14 +95,79 @@ def main():
         transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
     ])
 
-
-
-
     valid_queue = torch.utils.data.DataLoader(
             dset.CIFAR10(root=args.data, train=False, transform=valid_transform),
             batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True)
 
+    x = torch.randn(1,3,32,32)
+    model.eval()
+    print(model(x)[0])
 
+    conv_list = []
+    linear_list = []
+    for n, m in model.named_modules():
+        if isinstance(m, nn.Conv2d):
+            conv_list.append(n)
+        elif isinstance(m, nn.Linear):
+            linear_list.append(n)
+    
+    for n in conv_list:
+        keys = n.split(".")
+        i = 0
+        father = model
+        for i in range(len(keys) - 1):
+            father = father._modules[keys[i]]
+        
+        m = father._modules[keys[-1]]
+        tmp = m
+        in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode = m.in_channels, m.out_channels, m.kernel_size, m.stride, m.padding, m.dilation, m.groups, m.bias, m.padding_mode
+        if bias is not None:
+            use_bias = True
+        else:
+            use_bias = False
+        if isinstance(m, Conv2d):
+            new = NSTPConv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, use_bias, padding_mode)
+        elif isinstance(m, nn.Conv2d):
+            new = NConv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, use_bias, padding_mode)
+        if use_bias:
+            new.op.bias.data = m.bias.data
+        new.op.weight.data = m.weight.data
+        father._modules[keys[-1]] = new
+
+    for n in linear_list:
+        keys = n.split(".")
+        i = 0
+        father = model
+        for i in range(len(keys) - 1):
+            father = father._modules[keys[i]]
+        
+        m = father._modules[keys[-1]]
+        tmp = m
+        in_features, out_features, use_bias = m.in_features, m.out_features, use_bias
+        if bias is not None:
+            use_bias = True
+        else:
+            use_bias = False
+        new = NLinear(in_features, out_features, use_bias)
+        if use_bias:
+            new.op.bias.data = m.bias.data
+        new.op.weight.data = m.weight.data
+        father._modules[keys[-1]] = new
+
+    model.eval()
+    model.clear_noise()
+    print(model(x)[0])
+    print(model(x)[0])
+
+
+    for i in range(0):
+        model.clear_noise()
+        model.set_noise(1)
+        model.eval()
+        with torch.no_grad():
+            i, _ = model(x)
+        print(i)
+    # exit()
     valid_acc, valid_obj = infer(valid_queue, model, criterion)
     logging.info('valid_acc: %f', valid_acc)
 
@@ -113,9 +180,9 @@ def infer(valid_queue, model, criterion):
     top5 = utils.AverageMeter()
     model.eval()
 
-    for step, (x, target) in enumerate(valid_queue):
-        x = x.cuda()
-        target = target.cuda(non_blocking=True)
+    for step, (x, target) in enumerate(tqdm(valid_queue)):
+        # x = x.cuda()
+        target = target#.cuda(non_blocking=True)
 
         with torch.no_grad():
             logits, _ = model(x)
