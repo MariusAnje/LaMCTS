@@ -91,14 +91,14 @@ class AuxiliaryHeadCIFAR(nn.Module):
         self.features = nn.Sequential(
             nn.ReLU(inplace=True),
             nn.AvgPool2d(5, stride=3, padding=0, count_include_pad=False),  # image size = 2 x 2
-            nn.Conv2d(C, 128, 1, bias=False),
+            NConv2d(C, 128, 1, bias=False),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, 768, 2, bias=False),
+            NConv2d(128, 768, 2, bias=False),
             nn.BatchNorm2d(768),
             nn.ReLU(inplace=True)
         )
-        self.classifier = nn.Linear(768, num_classes)
+        self.classifier = NLinear(768, num_classes)
 
     def forward(self, x):
         x = self.features(x)
@@ -117,7 +117,7 @@ class NetworkCIFAR(nn.Module):
         stem_multiplier = 3
         C_curr = stem_multiplier * C
         self.stem = nn.Sequential(
-            nn.Conv2d(3, C_curr, 3, padding=1, bias=False),
+            NConv2d(3, C_curr, 3, padding=1, bias=False),
             nn.BatchNorm2d(C_curr)
         )
 
@@ -140,7 +140,7 @@ class NetworkCIFAR(nn.Module):
         if auxiliary:
             self.auxiliary_head = AuxiliaryHeadCIFAR(C_to_auxiliary, num_classes)
         self.global_pooling = nn.AdaptiveAvgPool2d(1)
-        self.classifier = nn.Linear(C_prev, num_classes)
+        self.classifier = NLinear(C_prev, num_classes)
 
     def forward(self, input):
         logits_aux = None
