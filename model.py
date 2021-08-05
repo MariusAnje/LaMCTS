@@ -69,13 +69,13 @@ def drop_path(x, drop_prob):
         keep_prob = 1. - drop_prob
 
         # mask = torch.cuda.FloatTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob)
-        mask = torch.FloatTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob)
+        mask = torch.FloatTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob).to(x.device)
         x.div_(keep_prob)
         try:
             x.mul_(mask)
         except:
             # mask = torch.cuda.HalfTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob)
-            mask = torch.HalfTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob)
+            mask = torch.HalfTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob).to(x.deivce)
             x.mul_(mask)
     return x
 
@@ -159,13 +159,13 @@ class NetworkCIFAR(nn.Module):
     
     def set_noise(self, var, N=8, m=2):
         for mo in self.modules():
-            if isinstance(mo, NLinear) or isinstance(mo, NConv2d):
+            if isinstance(mo, NLinear) or isinstance(mo, NConv2d) or isinstance(mo, NSTPConv2d):
                 # m.set_noise(var)
                 mo.set_noise(var, N, m)
     
     def clear_noise(self):
         for m in self.modules():
-            if isinstance(m, NLinear) or isinstance(m, NConv2d):
+            if isinstance(m, NLinear) or isinstance(m, NConv2d) or isinstance(m, NSTPConv2d):
                 m.clear_noise()
 
 

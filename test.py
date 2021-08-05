@@ -160,7 +160,7 @@ def infer(valid_queue, model, criterion, device):
     objs = utils.AverageMeter()
     top1 = utils.AverageMeter()
     top5 = utils.AverageMeter()
-    model.eval()
+    # model.eval()
 
     for step, (x, target) in enumerate(tqdm(valid_queue)):
         x = x.to(device)
