@@ -6,12 +6,15 @@
 import sys
 
 from numpy import isin
+# from torch._C import device
 import utils
 import argparse
 import torch.nn as nn
 import torch.utils
 import torchvision.datasets as dset
-# import torch.backends.cudnn as cudnn
+import torch
+if torch.cuda.is_available():
+    import torch.backends.cudnn as cudnn
 from collections import namedtuple
 from model import NetworkCIFAR as Network
 from operations import Conv2d, NSTPConv2d, NConv2d, NLinear
@@ -24,7 +27,7 @@ from tqdm import tqdm
 
 
 parser = argparse.ArgumentParser("cifar10")
-parser.add_argument('--data', type=str, default='../data', help='location of the data corpus')
+parser.add_argument('--data', type=str, default='~/Private/data', help='location of the data corpus')
 parser.add_argument('--batch_size', type=int, default=96, help='batch size')
 parser.add_argument('--lr', type=float, default=0.025, help='init learning rate')
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
@@ -45,21 +48,14 @@ parser.add_argument('--checkpoint', type=str, default='', help='load from checkp
 parser.add_argument('--save', type=str, default='EXP', help='experiment name')
 
 
-
-
-
 args = parser.parse_args()
 
 
 net = eval(args.arch)
-print(net)
+# print(net)
 code = gen_code_from_list(net, node_num=int((len(net) / 4)))
 genotype = translator([code, code], max_node=int((len(net) / 4)))
 # print(genotype)
-
-
-
-
 
 log_format = '%(asctime)s %(message)s'
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
@@ -69,23 +65,24 @@ fh.setFormatter(logging.Formatter(log_format))
 logging.getLogger().addHandler(fh)
 
 
-
 def main():
 
+    device  = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
     # torch.cuda.set_device(args.gpu)
-    # cudnn.benchmark = True
-    # cudnn.enabled = True
+    if device != torch.device("cpu"):
+        cudnn.benchmark = True
+        cudnn.enabled = True
 
     # logging.info('gpu device = %d' % args.gpu)
     # logging.info("args = %s", args)
 
-
-    model = Network(args.init_ch, 10, args.layers, True, genotype)#.cuda()
+    model = Network(args.init_ch, 10, args.layers, True, genotype)
     logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
     checkpoint = torch.load(args.checkpoint + '/top1.pt', map_location="cpu")
     model.load_state_dict(checkpoint['model_state_dict'])
-    criterion = nn.CrossEntropyLoss()#.cuda()
+    model = model.to(device)
+    criterion = nn.CrossEntropyLoss().to(device)
 
     CIFAR_MEAN = [0.49139968, 0.48215827, 0.44653124]
     CIFAR_STD = [0.24703233, 0.24348505, 0.26158768]
@@ -98,10 +95,6 @@ def main():
     valid_queue = torch.utils.data.DataLoader(
             dset.CIFAR10(root=args.data, train=False, transform=valid_transform),
             batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True)
-
-    x = torch.randn(1,3,32,32)
-    model.eval()
-    print(model(x)[0])
 
     conv_list = []
     linear_list = []
@@ -156,24 +149,13 @@ def main():
 
     model.eval()
     model.clear_noise()
-    print(model(x)[0])
-    print(model(x)[0])
 
-
-    for i in range(0):
-        model.clear_noise()
-        model.set_noise(1)
-        model.eval()
-        with torch.no_grad():
-            i, _ = model(x)
-        print(i)
-    # exit()
-    valid_acc, valid_obj = infer(valid_queue, model, criterion)
+    valid_acc, valid_obj = infer(valid_queue, model, criterion, device)
     logging.info('valid_acc: %f', valid_acc)
 
 
 
-def infer(valid_queue, model, criterion):
+def infer(valid_queue, model, criterion, device):
 
     objs = utils.AverageMeter()
     top1 = utils.AverageMeter()
@@ -181,8 +163,8 @@ def infer(valid_queue, model, criterion):
     model.eval()
 
     for step, (x, target) in enumerate(tqdm(valid_queue)):
-        # x = x.cuda()
-        target = target#.cuda(non_blocking=True)
+        x = x.to(device)
+        target = target.to(device)
 
         with torch.no_grad():
             logits, _ = model(x)
@@ -197,8 +179,6 @@ def infer(valid_queue, model, criterion):
 
         if step % args.report_freq == 0:
             logging.info('>>Validation: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
-
-
 
     return top1.avg, objs.avg
 

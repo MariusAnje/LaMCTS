@@ -58,7 +58,7 @@ def gen_all_nets(max_node=Max_node):
     for i in range(max_node):
         sample_nums *= len(b[i])
 
-    print(sample_nums)
+    # print(sample_nums)
     for o in b[0]:
         for t in b[1]:
             for th in b[2]:
@@ -68,7 +68,7 @@ def gen_all_nets(max_node=Max_node):
 
     # for i in block:
     #     print(i)
-    print(len(block))
+    # print(len(block))
 
     return block
 
