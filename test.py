@@ -44,7 +44,7 @@ parser.add_argument('--cutout_length', type=int, default=16, help='cutout length
 parser.add_argument('--drop_path_prob', type=float, default=0.2, help='drop path probability')
 parser.add_argument('--seed', type=int, default=0, help='random seed')
 parser.add_argument('--arch', type=str, default='', help='which architecture to use')
-parser.add_argument('--checkpoint', type=str, default='', help='load from checkpoint')
+parser.add_argument('--checkpoint', type=str, default='./lanas_128_99.03_N', help='load from checkpoint')
 parser.add_argument('--save', type=str, default='EXP', help='experiment name')
 
 
@@ -96,59 +96,63 @@ def main():
             dset.CIFAR10(root=args.data, train=False, transform=valid_transform),
             batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True)
 
-    conv_list = []
-    linear_list = []
-    for n, m in model.named_modules():
-        if isinstance(m, nn.Conv2d):
-            conv_list.append(n)
-        elif isinstance(m, nn.Linear):
-            linear_list.append(n)
+    # conv_list = []
+    # linear_list = []
+    # for n, m in model.named_modules():
+    #     if isinstance(m, nn.Conv2d):
+    #         conv_list.append(n)
+    #     elif isinstance(m, nn.Linear):
+    #         linear_list.append(n)
     
-    for n in conv_list:
-        keys = n.split(".")
-        i = 0
-        father = model
-        for i in range(len(keys) - 1):
-            father = father._modules[keys[i]]
+    # for n in conv_list:
+    #     keys = n.split(".")
+    #     i = 0
+    #     father = model
+    #     for i in range(len(keys) - 1):
+    #         father = father._modules[keys[i]]
         
-        m = father._modules[keys[-1]]
-        tmp = m
-        in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode = m.in_channels, m.out_channels, m.kernel_size, m.stride, m.padding, m.dilation, m.groups, m.bias, m.padding_mode
-        if bias is not None:
-            use_bias = True
-        else:
-            use_bias = False
-        if isinstance(m, Conv2d):
-            new = NSTPConv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, use_bias, padding_mode)
-        elif isinstance(m, nn.Conv2d):
-            new = NConv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, use_bias, padding_mode)
-        if use_bias:
-            new.op.bias.data = m.bias.data
-        new.op.weight.data = m.weight.data
-        father._modules[keys[-1]] = new
+    #     m = father._modules[keys[-1]]
+    #     tmp = m
+    #     in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode = m.in_channels, m.out_channels, m.kernel_size, m.stride, m.padding, m.dilation, m.groups, m.bias, m.padding_mode
+    #     if bias is not None:
+    #         use_bias = True
+    #     else:
+    #         use_bias = False
+    #     if isinstance(m, Conv2d):
+    #         new = NSTPConv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, use_bias, padding_mode)
+    #     elif isinstance(m, nn.Conv2d):
+    #         new = NConv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, use_bias, padding_mode)
+    #     if use_bias:
+    #         new.op.bias.data = m.bias.data
+    #     new.op.weight.data = m.weight.data
+    #     father._modules[keys[-1]] = new
 
-    for n in linear_list:
-        keys = n.split(".")
-        i = 0
-        father = model
-        for i in range(len(keys) - 1):
-            father = father._modules[keys[i]]
+    # for n in linear_list:
+    #     keys = n.split(".")
+    #     i = 0
+    #     father = model
+    #     for i in range(len(keys) - 1):
+    #         father = father._modules[keys[i]]
         
-        m = father._modules[keys[-1]]
-        tmp = m
-        in_features, out_features, use_bias = m.in_features, m.out_features, use_bias
-        if bias is not None:
-            use_bias = True
-        else:
-            use_bias = False
-        new = NLinear(in_features, out_features, use_bias)
-        if use_bias:
-            new.op.bias.data = m.bias.data
-        new.op.weight.data = m.weight.data
-        father._modules[keys[-1]] = new
+    #     m = father._modules[keys[-1]]
+    #     tmp = m
+    #     in_features, out_features, use_bias = m.in_features, m.out_features, use_bias
+    #     if bias is not None:
+    #         use_bias = True
+    #     else:
+    #         use_bias = False
+    #     new = NLinear(in_features, out_features, use_bias)
+    #     if use_bias:
+    #         new.op.bias.data = m.bias.data
+    #     new.op.weight.data = m.weight.data
+    #     father._modules[keys[-1]] = new
 
     model.eval()
     model.clear_noise()
+    # to_save = {}
+    # state_dict = model.state_dict()
+    # to_save["model_state_dict"] = state_dict
+    # torch.save(to_save, "top1")
 
     valid_acc, valid_obj = infer(valid_queue, model, criterion, device)
     logging.info('valid_acc: %f', valid_acc)
@@ -160,7 +164,7 @@ def infer(valid_queue, model, criterion, device):
     objs = utils.AverageMeter()
     top1 = utils.AverageMeter()
     top5 = utils.AverageMeter()
-    model.eval()
+    # model.eval()
 
     for step, (x, target) in enumerate(tqdm(valid_queue)):
         x = x.to(device)
