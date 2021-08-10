@@ -6,7 +6,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from modules import NConv2d, NSTPConv2d, NLinear, SConv2d, SSTPConv2d, SLinear
+from modules import NConv2d, NSTPConv2d, NLinear, SConv2d, SSTPConv2d, SLinear, SReLU, SMaxpool2D
 
 OPS = {
     'avg_pool_3x3': lambda C, stride, affine: nn.AvgPool2d(3, stride=stride, padding=1, count_include_pad=False),
