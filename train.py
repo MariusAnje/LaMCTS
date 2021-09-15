@@ -9,6 +9,7 @@ import  time
 import  glob
 import  numpy as np
 import  torch
+# from torch._C import device
 import  utils
 import  logging
 import  argparse
@@ -32,7 +33,7 @@ from torch.utils.data.dataset import Subset
 
 
 parser = argparse.ArgumentParser("cifar10")
-parser.add_argument('--data', type=str, default='../data', help='location of the data corpus')
+parser.add_argument('--data', type=str, default='~/Private/data', help='location of the data corpus')
 parser.add_argument('--batch_size', type=int, default=96, help='batch size')
 parser.add_argument('--lr', type=float, default=0.025, help='init learning rate')
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
@@ -67,6 +68,9 @@ parser.add_argument('--model-ema-decay', type=float, default=0.9998,
 
 parser.add_argument('--track_ema', action='store_true', default=False, help='track ema')
 parser.add_argument('--auto_augment', action='store_true', default=False)
+
+parser.add_argument('--noise_var', type=float, default=1.0, help='standard deviation of noise')
+parser.add_argument('--noise_epoch', type=int, default=100, help='number of epochs for noise eval')
 
 
 
@@ -103,13 +107,14 @@ def flatten_params(model):
 
 
 def main():
-
-
-    torch.cuda.set_device(args.gpu)
-    cudnn.benchmark = True
-    cudnn.enabled = True
-    logging.info('gpu device = %d' % args.gpu)
-    logging.info("args = %s", args)
+    header = time.time()
+    var = args.noise_var
+    device = torch.device(f"cuda:{args.gpu}")
+    # device = torch.device(f"cpu")
+    # cudnn.benchmark = True
+    # cudnn.enabled = True
+    # logging.info('gpu device = %d' % args.gpu)
+    # logging.info("args = %s", args)
     cur_epoch = 0
 
     net = eval(args.arch)
@@ -123,13 +128,13 @@ def main():
     if not continue_train:
 
         print('train from the scratch')
-        model = Network(args.init_ch, 10, args.layers, args.auxiliary, genotype).cuda()
+        model = Network(args.init_ch, 10, args.layers, args.auxiliary, genotype).to(device)
         print("model init params values:", flatten_params(model))
 
         logging.info("param size = %fMB", utils.count_parameters_in_MB(model))
 
 
-        criterion = CutMixCrossEntropyLoss(True).cuda()
+        criterion = CutMixCrossEntropyLoss(True).to(device)
 
 
         optimizer = torch.optim.SGD(
@@ -149,9 +154,9 @@ def main():
     else:
         print('continue train from checkpoint')
 
-        model = Network(args.init_ch, 10, args.layers, args.auxiliary, genotype).cuda()
+        model = Network(args.init_ch, 10, args.layers, args.auxiliary, genotype).to(device)
 
-        criterion = CutMixCrossEntropyLoss(True).cuda()
+        criterion = CutMixCrossEntropyLoss(True).to(device)
 
         optimizer = torch.optim.SGD(
             model.parameters(),
@@ -211,6 +216,8 @@ def main():
         for i in range(cur_epoch+1):
             scheduler.step()
 
+    model.to(device)
+    model.clear_noise()
     for epoch in range(cur_epoch, args.epochs):
         print('cur_epoch is', epoch)
         scheduler.step()
@@ -220,21 +227,21 @@ def main():
         if model_ema is not None:
             model_ema.ema.drop_path_prob = args.drop_path_prob * epoch / args.epochs
 
-        train_acc, train_obj = train(train_queue, model, criterion, optimizer, epoch, model_ema)
+        train_acc, train_obj = train(train_queue, model, criterion, optimizer, epoch, device, var, model_ema)
         logging.info('train_acc: %f', train_acc)
 
         if model_ema is not None and not args.model_ema_force_cpu:
-            valid_acc_ema, valid_obj_ema = infer(valid_queue, model_ema.ema, criterion, ema=True)
+            valid_acc_ema, valid_obj_ema = NEval_each(valid_queue, model_ema.ema, criterion, device, var, ema=True)
             logging.info('valid_acc_ema %f', valid_acc_ema)
 
-        valid_acc, valid_obj = infer(valid_queue, model, criterion)
+        valid_acc, valid_obj = NEval_each(valid_queue, model, criterion, var, device)
         logging.info('valid_acc: %f', valid_acc)
 
 
         if valid_acc > best_acc:
             best_acc = valid_acc
             print('this model is the best')
-            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict()}, os.path.join(args.save, 'top1.pt'))
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict()}, os.path.join(args.save, f'top1_{header}.pt'))
         print('current best acc is', best_acc)
         logging.info('best_acc: %f', best_acc)
 
@@ -242,15 +249,27 @@ def main():
             torch.save(
                 {'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(),
                  'state_dict_ema': get_state_dict(model_ema)},
-                os.path.join(args.save, 'model.pt'))
+                os.path.join(args.save, f'model_{header}.pt'))
 
         else:
-            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict()}, os.path.join(args.save, 'model.pt'))
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict()}, os.path.join(args.save, f'model_{header}.pt'))
 
         print('saved to: trained.pt')
+    
+    noise_acc_list = []
+    if model_ema is not None and not args.model_ema_force_cpu:
+        for _ in range(args.noise_epoch):
+            valid_acc_ema, valid_obj_ema = NEval(valid_queue, model_ema.ema, criterion, device, var, ema=True)
+            noise_acc_list.append(valid_acc_ema)
+        logging.info('valid_acc_ema %f', np.mean(noise_acc_list))
+    noise_acc_list = []
+    for _ in range(args.noise_epoch):
+        valid_acc, valid_obj = NEval(valid_queue, model, criterion, var, device)
+        noise_acc_list.append(valid_acc)
+    logging.info('valid_acc: %f', np.mean(noise_acc_list))
 
 
-def train(train_queue, model, criterion, optimizer, epoch, model_ema=None):
+def train(train_queue, model, criterion, optimizer, epoch, device, var, model_ema=None):
 
     objs = utils.AverageMeter()
     top1 = utils.AverageMeter()
@@ -259,8 +278,9 @@ def train(train_queue, model, criterion, optimizer, epoch, model_ema=None):
     model.train()
 
     for step, (x, target) in enumerate(train_queue):
-        x = x.cuda()
-        target = target.cuda(non_blocking=True)
+        model.set_noise(var)
+        x = x.to(device)
+        target = target.to(device)
 
         optimizer.zero_grad()
         logits, logits_aux = model(x)
@@ -293,7 +313,7 @@ def train(train_queue, model, criterion, optimizer, epoch, model_ema=None):
     return top1.avg, objs.avg
 
 
-def infer(valid_queue, model, criterion, ema=False):
+def infer(valid_queue, model, criterion, device, ema=False):
 
     objs = utils.AverageMeter()
     top1 = utils.AverageMeter()
@@ -301,8 +321,72 @@ def infer(valid_queue, model, criterion, ema=False):
     model.eval()
 
     for step, (x, target) in enumerate(valid_queue):
-        x = x.cuda()
-        target = target.cuda(non_blocking=True)
+        x = x.to(device)
+        target = target.to(device)
+
+        with torch.no_grad():
+            logits, _ = model(x)
+            loss = criterion(logits, target)
+
+            prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
+            n = x.size(0)
+            objs.update(loss.item(), n)
+            top1.update(prec1.item(), n)
+            top5.update(prec5.item(), n)
+
+
+        if step % args.report_freq == 0:
+            if not ema:
+                logging.info('>>Validation: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+            else:
+                logging.info('>>Validation_ema: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+
+
+    return top1.avg, objs.avg
+
+def NEval(valid_queue, model, criterion, device, var, ema=False):
+
+    objs = utils.AverageMeter()
+    top1 = utils.AverageMeter()
+    top5 = utils.AverageMeter()
+    model.eval()
+
+    for step, (x, target) in enumerate(valid_queue):
+        model.set_noise(var)
+        x = x.to(device)
+        target = target.to(device)
+
+        with torch.no_grad():
+            logits, _ = model(x)
+            loss = criterion(logits, target)
+
+            prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
+            n = x.size(0)
+            objs.update(loss.item(), n)
+            top1.update(prec1.item(), n)
+            top5.update(prec5.item(), n)
+
+
+        if step % args.report_freq == 0:
+            if not ema:
+                logging.info('>>Validation: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+            else:
+                logging.info('>>Validation_ema: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+
+
+    return top1.avg, objs.avg
+
+def NEval_each(valid_queue, model, criterion, device, var, ema=False):
+
+    objs = utils.AverageMeter()
+    top1 = utils.AverageMeter()
+    top5 = utils.AverageMeter()
+    model.eval()
+
+    for step, (x, target) in enumerate(valid_queue):
+        model.set_noise(var)
+        x = x.to(device)
+        target = target.to(device)
 
         with torch.no_grad():
             logits, _ = model(x)

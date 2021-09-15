@@ -188,11 +188,13 @@ class SSTPConv2d(SModule):
 class NModule(nn.Module):
     # def set_noise(self, var):
     #     self.noise = torch.normal(mean=0., std=var, size=self.noise.size()).to(self.op.weight.device) 
+
     def set_noise(self, var, N, m):
-        noise = torch.zeros_like(self.noise)
+        # N: number of bits per weight, m: number of bits per device
+        noise = torch.zeros_like(self.noise).to(self.op.weight.device)
         scale = self.op.weight.abs().max()
         for i in range(1, N//m + 1):
-            noise += torch.normal(mean=0., std=var, size=self.noise.size()) * (pow(2, - i*m))
+            noise += (torch.normal(mean=0., std=var, size=self.noise.size()) * (pow(2, - i*m))).to(self.op.weight.device)
         self.noise = noise.to(self.op.weight.device) * scale
     
     def clear_noise(self):
@@ -346,7 +348,7 @@ class SModel(nn.Module):
 
     def set_noise(self, var, N=8, m=1):
         for mo in self.modules():
-            if isinstance(mo, SLinear) or isinstance(mo, SConv2d):
+            if isinstance(mo, SLinear) or isinstance(mo, SConv2d) or isinstance(mo, NModule):
                 # m.set_noise(var)
                 mo.set_noise(var, N, m)
     
@@ -385,21 +387,22 @@ class SModel(nn.Module):
     def normalize(self):
         for mo in self.modules():
             if isinstance(mo, SLinear) or isinstance(mo, SConv2d):
-                if mo.original_w is None:
-                    mo.original_w = mo.op.weight.data
-                if (mo.original_b is None) and (mo.op.bias is not None):
-                    mo.original_b = mo.op.bias.data
-                scale = mo.op.weight.data.abs().max().item()
-                mo.op.weight.data = mo.op.weight.data / scale
-                if mo.op.bias is not None:
-                    mo.op.bias.data = mo.op.bias.data / scale
-    
+                mo.normalize()
+
+    def get_scale(self):
+        scale = 1.0
+        for m in self.modules():
+            if isinstance(m, SLinear) or isinstance(m, SConv2d):
+                scale *= m.scale
+        return scale
+
     def de_normalize(self):
         for mo in self.modules():
             if isinstance(mo, SLinear) or isinstance(mo, SConv2d):
                 if mo.original_w is None:
                     raise Exception("no original weight")
                 else:
+                    mo.scale = 1.0
                     mo.op.weight.data = mo.original_w
                     if mo.original_b is not None:
                         mo.op.bias.data = mo.original_b
