@@ -6,7 +6,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from modules import NConv2d, NSTPConv2d, NLinear, SConv2d, SSTPConv2d, SLinear, SReLU, SMaxpool2D
+from Functions import SCrossEntropyLossFunction
+from modules import NConv2d, NSTPConv2d, NLinear, SConv2d, SSTPConv2d, SLinear, SBatchNorm2d, SReLU
 
 OPS = {
     'avg_pool_3x3': lambda C, stride, affine: nn.AvgPool2d(3, stride=stride, padding=1, count_include_pad=False),
@@ -24,6 +25,19 @@ OPS = {
     'conv_5x5' : lambda C, stride, affine: NConv2d(C, C, (5,5), stride=(stride, stride), padding=(2,2), bias=False),
 }
 
+class SCrossEntropyLoss(nn.Module):
+    def __init__(self, weight=None, size_average=None, ignore_index=-100, reduce=None, reduction='mean'):
+        super().__init__()
+        self.function = SCrossEntropyLossFunction
+        self.weight = weight
+        self.size_average = size_average
+        self.ignore_index = ignore_index
+        self.reduce = reduce
+        self.reduction = reduction
+    
+    def forward(self, input, inputS, labels):
+        output = self.function.apply(input, inputS, labels, self.weight, self.size_average, self.ignore_index, self.reduce, self.reduction)
+        return output
 
 class ReLUConvBN(nn.Module):
     def __init__(self, C_in, C_out, kernel_size, stride, padding, affine=True):
@@ -31,30 +45,14 @@ class ReLUConvBN(nn.Module):
         super(ReLUConvBN, self).__init__()
 
         self.op = nn.Sequential(
-            nn.ReLU(inplace=False),
-            NSTPConv2d(C_in, C_out, kernel_size, stride=stride, padding=padding, bias=False),
-            nn.BatchNorm2d(C_out, affine=affine)
+            SReLU(inplace=False),
+            SSTPConv2d(C_in, C_out, kernel_size, stride=stride, padding=padding, bias=False),
+            SBatchNorm2d(C_out, affine=affine)
         )
 
     def forward(self, x):
         return self.op(x)
 
-class Conv2d(nn.Conv2d):
-
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
-                 padding=0, dilation=1, groups=1, bias=True):
-        super(Conv2d, self).__init__(in_channels, out_channels, kernel_size, stride,
-                 padding, dilation, groups, bias)
-
-    def forward(self, x):
-        weight = self.weight
-        weight_mean = weight.mean(dim=1, keepdim=True).mean(dim=2,
-                                  keepdim=True).mean(dim=3, keepdim=True)
-        weight = weight - weight_mean
-        std = weight.view(weight.size(0), -1).std(dim=1).view(-1, 1, 1, 1) + 1e-5
-        weight = weight / std.expand_as(weight)
-        return F.conv2d(x, weight, self.bias, self.stride,
-                        self.padding, self.dilation, self.groups)
 
 class SepConv(nn.Module):
 
@@ -62,16 +60,16 @@ class SepConv(nn.Module):
         super(SepConv, self).__init__()
 
         self.op = nn.Sequential(
-            nn.ReLU(inplace=False),
-            NConv2d(C_in, C_in, kernel_size=kernel_size, stride=stride, padding=padding,
+            SReLU(inplace=False),
+            SConv2d(C_in, C_in, kernel_size=kernel_size, stride=stride, padding=padding,
                       groups=C_in, bias=False),
-            NSTPConv2d(C_in, C_in, kernel_size=1, padding=0, bias=False),
-            nn.BatchNorm2d(C_in, affine=affine),
-            nn.ReLU(inplace=False),
-            NConv2d(C_in, C_in, kernel_size=kernel_size, stride=1, padding=padding,
+            SSTPConv2d(C_in, C_in, kernel_size=1, padding=0, bias=False),
+            SBatchNorm2d(C_in, affine=affine),
+            SReLU(inplace=False),
+            SConv2d(C_in, C_in, kernel_size=kernel_size, stride=1, padding=padding,
                       groups=C_in, bias=False),
-            NSTPConv2d(C_in, C_out, kernel_size=1, padding=0, bias=False),
-            nn.BatchNorm2d(C_out, affine=affine),
+            SSTPConv2d(C_in, C_out, kernel_size=1, padding=0, bias=False),
+            SBatchNorm2d(C_out, affine=affine),
         )
 
     def forward(self, x):
@@ -91,11 +89,11 @@ class DilConv(nn.Module):
     def __init__(self, C_in, C_out, kernel_size, stride, padding, dilation, affine=True):
         super(DilConv, self).__init__()
         self.op = nn.Sequential(
-            nn.ReLU(inplace=False),
-            NConv2d(C_in, C_in, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation,
+            SReLU(inplace=False),
+            SConv2d(C_in, C_in, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation,
                       groups=C_in, bias=False),
-            NSTPConv2d(C_in, C_out, kernel_size=1, padding=0, bias=False),
-            nn.BatchNorm2d(C_out, affine=affine),
+            SSTPConv2d(C_in, C_out, kernel_size=1, padding=0, bias=False),
+            SBatchNorm2d(C_out, affine=affine),
         )
 
     def forward(self, x):
@@ -121,14 +119,3 @@ class FactorizedReduce(nn.Module):
         out = torch.cat([self.conv_1(x), self.conv_2(x[:, :, 1:, 1:])], dim=1)
         out = self.bn(out)
         return out
-
-
-
-
-
-
-
-
-
-
-

@@ -67,36 +67,68 @@ class SConv2dFunction(autograd.Function):
         conv_out = F.conv2d(input, weight, bias, stride, padding, dilation, groups)
         padding = padding[0]
         padded_input = F.pad(input,tuple(4*[padding]))
+        ctx.stride = stride
+        ctx.groups = groups
         ctx.save_for_backward(padded_input, weight, bias, torch.IntTensor([padding]).to(padded_input.device))
         return conv_out, torch.ones_like(conv_out)
     
     @staticmethod
-    def backward(ctx, grad_output, grad_outputS):
-        input, weight, bias, padding = ctx.saved_tensors
-        oc, ic, kw, kh = weight.shape
-        col_image = F.unfold(input,(kw,kh)).transpose(1,2)
-        bs, channels, ow, oh = grad_output.shape
+    def backward(ctx, grad_output_ori, grad_outputS_ori):
+        input_ori, weight_ori, bias, padding = ctx.saved_tensors
+        stride = ctx.stride
+        o_size = grad_output_ori.shape
+        new_o = torch.zeros(o_size[0], o_size[1], o_size[2] * stride[0], o_size[3] * stride[1]).to(grad_output_ori.device)
+        new_o[:,:,::stride[0],::stride[1]] = grad_output_ori
+        new_oS = torch.zeros(o_size[0], o_size[1], o_size[2] * stride[0], o_size[3] * stride[1]).to(grad_outputS_ori.device)
+        new_oS[:,:,::stride[0],::stride[1]] = grad_outputS_ori
+        grad_output_ori = new_o
+        grad_outputS_ori = new_oS
         
-        # col_grad_output = grad_output.view(bs, channels, -1)
-        grad_w = grad_output.view(bs, channels, -1).bmm(col_image).sum(dim=0).view(weight.shape)
-        grad_wS = grad_outputS.view(bs, channels, -1).bmm(col_image**2).sum(dim=0).view(weight.shape) # SSSS
+        oc, ic, kw, kh = weight_ori.shape
+        block_o = oc // ctx.groups
+        block_i = ic
+        grad_w = []
+        grad_wS = []
+        grad_b = []
+        grad_i = []
+        grad_iS = []
+        for i in range(ctx.groups):
+            weight = weight_ori[block_o*i:block_o*(i+1),:,:,:]
+            input = input_ori[:,block_i*i:block_i*(i+1),:,:]
+            grad_output = grad_output_ori[:,block_o*i:block_o*(i+1),:,:]
+            grad_outputS = grad_outputS_ori[:,block_o*i:block_o*(i+1),:,:]
 
-        if bias is None:
-            grad_b = None
-        else:
-            grad_b = grad_output.sum(axis=[0,2,3])
+            oc, ic, kw, kh = weight.shape
+            col_image = F.unfold(input,(kw,kh)).transpose(1,2)
+            bs, channels, ow, oh = grad_output.shape
+            
+            # col_grad_output = grad_output.view(bs, channels, -1)
+            grad_w.append(grad_output.view(bs, channels, -1).bmm(col_image).sum(dim=0).view(weight.shape))
+            grad_wS.append(grad_outputS.view(bs, channels, -1).bmm(col_image**2).sum(dim=0).view(weight.shape)) # SSSS
 
-        grad_output_padded = F.pad(grad_output,tuple(4*[kw-1-padding.item()]))
-        col_grad = F.unfold(grad_output_padded,(kh,kw)).transpose(1,2)
-        grad_outputS_padded = F.pad(grad_outputS,tuple(4*[kw-1-padding.item()])) # SSSS
-        col_gradS = F.unfold(grad_outputS_padded,(kh,kw)).transpose(1,2)
+            if bias is None:
+                grad_b = None
+            else:
+                grad_b.append(grad_output.sum(axis=[0,2,3]))
+
+            grad_output_padded = F.pad(grad_output,tuple(4*[kw-1-padding.item()]))
+            col_grad = F.unfold(grad_output_padded,(kh,kw)).transpose(1,2)
+            grad_outputS_padded = F.pad(grad_outputS,tuple(4*[kw-1-padding.item()])) # SSSS
+            col_gradS = F.unfold(grad_outputS_padded,(kh,kw)).transpose(1,2)
+            
+            flipped_w = weight.flip([2,3]).swapaxes(0,1)
+            col_flip = flipped_w.reshape(flipped_w.size(0),-1)
+            grad_i_this = col_grad.matmul(col_flip.t()).transpose(1,2)
+            grad_i.append(F.fold(grad_i_this, (ow, oh), (1,1)))
+            grad_iS_this  = col_gradS.matmul(col_flip.t() ** 2).transpose(1,2)
+            grad_iS.append(F.fold(grad_iS_this, (ow, oh), (1,1)))
         
-        flipped_w = weight.flip([2,3]).swapaxes(0,1)
-        col_flip = flipped_w.reshape(flipped_w.size(0),-1)
-        grad_i = col_grad.matmul(col_flip.t()).transpose(1,2)
-        grad_i = F.fold(grad_i, (ow, oh), (1,1))
-        grad_iS = col_gradS.matmul(col_flip.t() ** 2).transpose(1,2)
-        grad_iS = F.fold(grad_iS, (ow, oh), (1,1))
+        grad_w = torch.cat(grad_w, dim=0)
+        grad_wS = torch.cat(grad_wS, dim=0)
+        grad_i = torch.cat(grad_i, dim=1)
+        grad_iS = torch.cat(grad_iS, dim=1)
+        if bias is not None:
+            grad_b = torch.cat(grad_b, dim=0)
 
         return grad_i, grad_iS, grad_w, grad_wS, grad_b, None, None, None, None
 
@@ -107,16 +139,19 @@ class SBatchNorm2dFunction(autograd.Function):
     def forward(ctx, input, inputS, running_mean, running_var, weight=None, bias=None, training=False, momentum=0.1, eps=1e-05):
         function = torch.nn.functional.batch_norm
         output = function(input, running_mean, running_var, weight, bias, training, momentum, eps)
-        ctx.save_for_backward(input, running_mean, running_var, weight, bias, eps)
+        ctx.save_for_backward(input, running_mean, running_var, weight, bias, torch.Tensor([eps]).to(weight.device))
         return output, torch.ones_like(output)
 
     @staticmethod
     def backward(ctx, grad_output, grad_outputS):
         
         input, running_mean, running_var, weight, bias, eps = ctx.saved_tensors
+        running_mean = running_mean.view(1,-1,1,1)
+        running_var = running_var.view(1,-1,1,1)
+        weight = weight.view(1,-1,1,1)
         skr = torch.sqrt(running_var + eps)
         if weight is not None:
-            grad_weight = (input - running_mean) / skr
+            grad_weight = ((input - running_mean) / skr).sum(dim=[0,2,3])
         else:
             weight = 1
             grad_weight = None
@@ -126,10 +161,13 @@ class SBatchNorm2dFunction(autograd.Function):
             bias = 0
             grad_bias = None
         grad_input = grad_output * weight / skr
-        grad_inputS = grad_outputS * (weight**2) / running_var + eps
+        grad_inputS = grad_outputS * ((weight / skr) ** 2)
+        # grad_inputS = grad_outputS * ((weight **2 / skr))
         
 
         return grad_input, grad_inputS, None, None, grad_weight, grad_bias, None, None, None
+
+
 
 class SMSEFunction(autograd.Function):
     @staticmethod

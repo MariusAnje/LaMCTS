@@ -4,6 +4,23 @@ from torch import functional
 from torch._C import device
 from Functions import SLinearFunction, SConv2dFunction, SBatchNorm2dFunction, SMSEFunction, SCrossEntropyLossFunction    
 
+class STPConv2d(nn.Conv2d):
+
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
+                 padding=0, dilation=1, groups=1, bias=True):
+        super(STPConv2d, self).__init__(in_channels, out_channels, kernel_size, stride,
+                 padding, dilation, groups, bias)
+
+    def forward(self, x):
+        weight = self.weight
+        weight_mean = weight.mean(dim=1, keepdim=True).mean(dim=2,
+                                  keepdim=True).mean(dim=3, keepdim=True)
+        weight = weight - weight_mean
+        std = weight.view(weight.size(0), -1).std(dim=1).view(-1, 1, 1, 1) + 1e-5
+        weight = weight / std.expand_as(weight)
+        return functional.conv2d(x, weight, self.bias, self.stride,
+                        self.padding, self.dilation, self.groups)
+
 class SModule(nn.Module):
     def __init__(self):
         super().__init__()
@@ -14,6 +31,7 @@ class SModule(nn.Module):
         self.mask = torch.ones_like(self.op.weight)
         self.original_w = None
         self.original_b = None
+        self.scale = 1.0
 
     # def set_noise(self, var):
         # self.noise = torch.normal(mean=0., std=var, size=self.noise.size()).to(self.op.weight.device) 
@@ -41,7 +59,10 @@ class SModule(nn.Module):
         if method == "r_saliency":
             if alpha is None:
                 alpha = 2
-            return self.weightS.grad.abs() * self.op.weight.abs().max() / (self.op.weight.data ** alpha + 1e-8).abs()
+            # MODIFICATION HERE DUDE
+            return self.weightS.grad.abs() * self.weightS.grad.abs().max() / (self.op.weight.data ** alpha + 1e-8).abs() # Original
+            # return self.weightS.grad.abs() / (self.op.weight.data ** alpha + 1e-8).abs()
+            # return self.weightS.grad.abs() * self.weightS.grad.abs().max() / ((self.op.weight.data * self.scale) ** alpha + 1e-8).abs()
         if method == "subtract":
             return self.weightS.grad.data.abs() - alpha * self.weightS.grad.data.abs() * (self.op.weight.data ** 2)
         else:
@@ -95,6 +116,17 @@ class SModule(nn.Module):
 
     def do_second(self):
         self.op.weight.grad.data = self.op.weight.grad.data / (self.weightS.grad.data + 1e-10)
+    
+    def normalize(self):
+        if self.original_w is None:
+            self.original_w = self.op.weight.data
+        if (self.original_b is None) and (self.op.bias is not None):
+            self.original_b = self.op.bias.data
+        scale = self.op.weight.data.abs().max().item()
+        self.scale = scale
+        self.op.weight.data = self.op.weight.data / scale
+        # if self.op.bias is not None:
+        #     self.op.bias.data = self.op.bias.data / scale
 
 class SLinear(SModule):
     def __init__(self, in_features, out_features, bias=True):
@@ -103,8 +135,15 @@ class SLinear(SModule):
         self.create_helper()
         self.function = SLinearFunction.apply
 
-    def forward(self, x, xS):
-        x, xS = self.function(x, xS, (self.op.weight + self.noise) * self.mask, self.weightS, self.op.bias)
+    def forward(self, xC):
+        x, xS = xC
+        x, xS = self.function(x * self.scale, xS * self.scale, (self.op.weight + self.noise) * self.mask, self.weightS)
+        # x = self.scale * x
+        # xS = self.scale * xS
+        if self.op.bias is not None:
+            x += self.op.bias
+        if self.op.bias is not None:
+            xS += self.op.bias
         return x, xS
 
 class SConv2d(SModule):
@@ -114,8 +153,14 @@ class SConv2d(SModule):
         self.create_helper()
         self.function = SConv2dFunction.apply
 
-    def forward(self, x, xS):
-        x, xS = self.function(x, xS, (self.op.weight + self.noise) * self.mask, self.weightS, self.op.bias, self.op.stride, self.op.padding, self.op.dilation, self.op.groups)
+    def forward(self, xC):
+        x, xS = xC
+        # x, xS = self.function(x, xS, (self.op.weight + self.noise) * self.mask, self.weightS, None, self.op.stride, self.op.padding, self.op.dilation, self.op.groups)
+        x, xS = self.function(x * self.scale, xS * self.scale, (self.op.weight + self.noise) * self.mask, self.weightS, None, self.op.stride, self.op.padding, self.op.dilation, self.op.groups)
+        if self.op.bias is not None:
+            x += self.op.bias.reshape(1,-1,1,1).expand_as(x)
+        if self.op.bias is not None:
+            xS += self.op.bias.reshape(1,-1,1,1).expand_as(xS)
         return x, xS
 
 class SSTPConv2d(SModule):
@@ -125,14 +170,19 @@ class SSTPConv2d(SModule):
         self.create_helper()
         self.function = SConv2dFunction.apply
 
-    def forward(self, x, xS):
+    def forward(self, xC):
+        x, xS = xC
         weight = self.op.weight
         weight_mean = weight.mean(dim=1, keepdim=True).mean(dim=2,
                                   keepdim=True).mean(dim=3, keepdim=True)
         weight = weight - weight_mean
         std = weight.view(weight.size(0), -1).std(dim=1).view(-1, 1, 1, 1) + 1e-5
         weight = weight / std.expand_as(weight)
-        x = self.function(x, (weight + self.noise) * self.mask, self.op.bias, self.op.stride, self.op.padding, self.op.dilation, self.op.groups)
+        x, xS = self.function(x * self.scale, xS * self.scale, (weight + self.noise) * self.mask, self.weightS, None, self.op.stride, self.op.padding, self.op.dilation, self.op.groups)
+        if self.op.bias is not None:
+            x += self.op.bias
+        if self.op.bias is not None:
+            xS += self.op.bias
         return x, xS
 
 class NModule(nn.Module):
@@ -188,11 +238,12 @@ class NSTPConv2d(NModule):
         return x
 
 class SReLU(nn.Module):
-    def __init__(self):
+    def __init__(self, inplace=False):
         super().__init__()
-        self.op = nn.ReLU()
+        self.op = nn.ReLU(inplace)
     
-    def forward(self, x, xS):
+    def forward(self, xC):
+        x, xS = xC
         with torch.no_grad():
             mask = (x > 0).to(torch.float)
         return self.op(x), xS * mask
@@ -212,22 +263,23 @@ class SMaxpool2D(nn.Module):
         return shape, [BD, CD, indice.view(-1)]
 
     
-    def forward(self, x, xS):
+    def forward(self, xC):
+        x, xS = xC
         x, indices = self.op(x)
         shape, indices = self.parse_indice(indices)
         xS = xS.view(shape)[indices].view(x.shape)
         return x, xS
 
 class SBatchNorm2d(nn.Module):
-    def __init__(self, num_features, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True, device=None, dtype=None):
+    def __init__(self, num_features, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True):
         super().__init__()
-        self.op = nn.BatchNorm2d(num_features, eps, momentum, affine, track_running_stats, device, dtype)
-        self.function = SBatchNorm2dFunction
+        self.op = nn.BatchNorm2d(num_features, eps, momentum, affine, track_running_stats)
+        self.function = SBatchNorm2dFunction.apply
     
-    def forward(self, x, xS):
+    def forward(self, xC):
+        x, xS = xC
         x, xS = self.function(x, xS, self.op.running_mean, self.op.running_var, self.op.weight, self.op.bias, self.op.training, self.op.momentum, self.op.eps)
         return x, xS
-
 
 class FakeSModule(nn.Module):
     def __init__(self, op):
@@ -236,7 +288,8 @@ class FakeSModule(nn.Module):
         if isinstance(self.op, nn.MaxPool2d):
             self.op.return_indices = False
     
-    def forward(self, x, xS):
+    def forward(self, xC):
+        x, xS = xC
         x = self.op(x)
         return x, None
 
