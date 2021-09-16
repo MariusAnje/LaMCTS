@@ -38,7 +38,7 @@ parser.add_argument('--batch_size', type=int, default=96, help='batch size')
 parser.add_argument('--lr', type=float, default=0.025, help='init learning rate')
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
 parser.add_argument('--wd', type=float, default=3e-4, help='weight decay')
-parser.add_argument('--report_freq', type=float, default=50, help='report frequency')
+parser.add_argument('--report_freq', type=float, default=1000, help='report frequency')
 parser.add_argument('--gpu', type=int, default=0, help='gpu device id')
 parser.add_argument('--epochs', type=int, default=600, help='num of training epochs')
 parser.add_argument('--init_ch', type=int, default=36, help='num of init channels')
@@ -77,9 +77,8 @@ parser.add_argument('--noise_epoch', type=int, default=100, help='number of epoc
 
 
 args = parser.parse_args()
-args.save = 'checkpoints/auto_aug-1500-{}-{}-{}-{}-{}-{}-{}'.format(args.arch, args.init_ch, args.model_ema,
-                                                         args.model_ema_decay, args.drop_path_prob,
-                                                               args.layers, args.cutout_length)
+header = time.time()
+args.save = f'checkpoints/lol_{header}'
 
 
 print("save path:", args.save)
@@ -107,7 +106,6 @@ def flatten_params(model):
 
 
 def main():
-    header = time.time()
     var = args.noise_var
     device = torch.device(f"cuda:{args.gpu}")
     # device = torch.device(f"cpu")
@@ -234,14 +232,14 @@ def main():
             valid_acc_ema, valid_obj_ema = NEval_each(valid_queue, model_ema.ema, criterion, device, var, ema=True)
             logging.info('valid_acc_ema %f', valid_acc_ema)
 
-        valid_acc, valid_obj = NEval_each(valid_queue, model, criterion, var, device)
+        valid_acc, valid_obj = NEval_each(valid_queue, model, criterion, device, var)
         logging.info('valid_acc: %f', valid_acc)
 
 
         if valid_acc > best_acc:
             best_acc = valid_acc
             print('this model is the best')
-            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict()}, os.path.join(args.save, f'top1_{header}.pt'))
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict()}, os.path.join(args.save, f'top1.pt'))
         print('current best acc is', best_acc)
         logging.info('best_acc: %f', best_acc)
 
@@ -249,10 +247,10 @@ def main():
             torch.save(
                 {'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(),
                  'state_dict_ema': get_state_dict(model_ema)},
-                os.path.join(args.save, f'model_{header}.pt'))
+                os.path.join(args.save, f'model.pt'))
 
         else:
-            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict()}, os.path.join(args.save, f'model_{header}.pt'))
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict()}, os.path.join(args.save, f'model.pt'))
 
         print('saved to: trained.pt')
     
@@ -264,7 +262,7 @@ def main():
         logging.info('valid_acc_ema %f', np.mean(noise_acc_list))
     noise_acc_list = []
     for _ in range(args.noise_epoch):
-        valid_acc, valid_obj = NEval(valid_queue, model, criterion, var, device)
+        valid_acc, valid_obj = NEval(valid_queue, model, criterion, device, var)
         noise_acc_list.append(valid_acc)
     logging.info('valid_acc: %f', np.mean(noise_acc_list))
 
@@ -307,8 +305,8 @@ def train(train_queue, model, criterion, optimizer, epoch, device, var, model_em
         if model_ema is not None:
             model_ema.update(model)
 
-        if step % args.report_freq == 0:
-            logging.info('train %03d', step)
+        # if step % args.report_freq == 0:
+        #     logging.info('train %03d', step)
 
     return top1.avg, objs.avg
 
@@ -335,11 +333,11 @@ def infer(valid_queue, model, criterion, device, ema=False):
             top5.update(prec5.item(), n)
 
 
-        if step % args.report_freq == 0:
-            if not ema:
-                logging.info('>>Validation: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
-            else:
-                logging.info('>>Validation_ema: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+        # if step % args.report_freq == 0:
+        #     if not ema:
+        #         logging.info('>>Validation: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+        #     else:
+        #         logging.info('>>Validation_ema: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
 
 
     return top1.avg, objs.avg
@@ -350,9 +348,9 @@ def NEval(valid_queue, model, criterion, device, var, ema=False):
     top1 = utils.AverageMeter()
     top5 = utils.AverageMeter()
     model.eval()
+    model.set_noise(var)
 
     for step, (x, target) in enumerate(valid_queue):
-        model.set_noise(var)
         x = x.to(device)
         target = target.to(device)
 
@@ -367,11 +365,11 @@ def NEval(valid_queue, model, criterion, device, var, ema=False):
             top5.update(prec5.item(), n)
 
 
-        if step % args.report_freq == 0:
-            if not ema:
-                logging.info('>>Validation: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
-            else:
-                logging.info('>>Validation_ema: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+        # if step % args.report_freq == 0:
+        #     if not ema:
+        #         logging.info('>>Validation: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+        #     else:
+        #         logging.info('>>Validation_ema: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
 
 
     return top1.avg, objs.avg
@@ -399,11 +397,11 @@ def NEval_each(valid_queue, model, criterion, device, var, ema=False):
             top5.update(prec5.item(), n)
 
 
-        if step % args.report_freq == 0:
-            if not ema:
-                logging.info('>>Validation: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
-            else:
-                logging.info('>>Validation_ema: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+        # if step % args.report_freq == 0:
+        #     if not ema:
+        #         logging.info('>>Validation: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+        #     else:
+        #         logging.info('>>Validation_ema: %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
 
 
     return top1.avg, objs.avg
